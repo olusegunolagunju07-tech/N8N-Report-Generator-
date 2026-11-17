@@ -1,0 +1,173 @@
+{
+  "name": "Weekly Process Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "weekly-schedule",
+      "name": "Weekly Schedule"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "get-sheet-rows",
+      "name": "Get Sheet Rows"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node  |  Mode: \"Run Once for All Items\"  |  Language: JavaScript\n// Input: all rows from the Google Sheets \"Get Row(s)\" node\n// Output: one item with stats, week-over-week change, and out-of-limit alerts\n\n// ---------- EDIT THESE ----------\nconst DAYS = 7;                                         // reporting window\nconst METRICS = ['Temperature', 'Pressure', 'Yield'];   // must match your sheet headers exactly\nconst LIMITS = {                                        // set only the limits you care about\n  Temperature: { max: 85 },                             // e.g. reactor temp above 85 °C\n  Pressure:    { max: 5 },\n  Yield:       { min: 90 },\n};\n// --------------------------------\n\nconst rows = $input.all().map(i => i.json);\n\nconst now = new Date();\nconst startCurrent = new Date(now); startCurrent.setDate(now.getDate() - DAYS);\nconst startPrevious = new Date(now); startPrevious.setDate(now.getDate() - 2 * DAYS);\n\nconst dateOf = r => new Date(r.Date);\nconst current = rows.filter(r => dateOf(r) >= startCurrent && dateOf(r) <= now);\nconst previous = rows.filter(r => dateOf(r) >= startPrevious && dateOf(r) < startCurrent);\n\nconst round = n => Math.round(n * 100) / 100;\n\nfunction stats(data, metric) {\n  const v = data.map(r => parseFloat(r[metric])).filter(x => !isNaN(x));\n  if (!v.length) return null;\n  const total = v.reduce((a, b) => a + b, 0);\n  return { count: v.length, total: round(total), avg: round(total / v.length), min: Math.min(...v), max: Math.max(...v) };\n}\n\nconst summary = {};\nfor (const m of METRICS) {\n  const cur = stats(current, m);\n  const prev = stats(previous, m);\n  let changePct = null;\n  if (cur && prev && prev.avg !== 0) changePct = round(((cur.avg - prev.avg) / prev.avg) * 100);\n  summary[m] = { ...cur, previousAvg: prev ? prev.avg : null, avgChangePct: changePct };\n}\n\n// Flag readings outside limits\nconst alerts = [];\nfor (const r of current) {\n  for (const m of METRICS) {\n    const val = parseFloat(r[m]);\n    const lim = LIMITS[m];\n    if (isNaN(val) || !lim) continue;\n    if (lim.max !== undefined && val > lim.max) alerts.push(`${m} ${val} on ${r.Date} is above the limit of ${lim.max}`);\n    if (lim.min !== undefined && val < lim.min) alerts.push(`${m} ${val} on ${r.Date} is below the limit of ${lim.min}`);\n  }\n}\n\nreturn [{\n  json: {\n    period: `${startCurrent.toISOString().slice(0, 10)} to ${now.toISOString().slice(0, 10)}`,\n    rowsInPeriod: current.length,\n    summary,\n    alertCount: alerts.length,\n    alerts,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "calculate-stats",
+      "name": "Calculate Stats"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Write a 5-sentence management summary of these figures. Highlight anything unusual and one recommended action. If alerts are listed, mention them specifically. Figures: {{ JSON.stringify($json) }}",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        672,
+        0
+      ],
+      "id": "ai-summary",
+      "name": "AI Summary"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        608,
+        176
+      ],
+      "id": "gemini-chat-model",
+      "name": "Gemini Chat Model"
+    },
+    {
+      "parameters": {
+        "sendTo": "you@example.com",
+        "subject": "=Weekly Process Report: {{ $('Calculate Stats').item.json.period }}{{ $('Calculate Stats').item.json.alertCount > 0 ? ' (' + $('Calculate Stats').item.json.alertCount + ' alerts)' : '' }}",
+        "message": "={{ $json.text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "email-report",
+      "name": "Email Report"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Weekly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Get Sheet Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Sheet Rows": {
+      "main": [
+        [
+          {
+            "node": "Calculate Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Stats": {
+      "main": [
+        [
+          {
+            "node": "AI Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Summary",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Summary": {
+      "main": [
+        [
+          {
+            "node": "Email Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}
